@@ -412,29 +412,6 @@
         </button>
       </div>
       <div class="err" id="key_err"></div>
-
-      <!-- Google Image Search keys — optional -->
-      <div style="margin-top:22px; padding-top:18px; border-top:1px solid var(--border);">
-        <div class="card-title" style="margin-bottom:4px;">Step 2 — Google Image Search <span style="font-weight:400;text-transform:none;letter-spacing:0;">(optional — for press-quality photos)</span></div>
-        <div class="api-note" style="margin-bottom:12px;">
-          Get a free key at <a href="https://console.cloud.google.com/apis/library/customsearch.googleapis.com" target="_blank" rel="noopener" style="color:var(--red);">Google Cloud Console</a>, then create a Search Engine ID at <a href="https://programmablesearchengine.google.com/controlpanel/create" target="_blank" rel="noopener" style="color:var(--red);">Programmable Search Engine</a>. Free for 100 searches/day.
-        </div>
-        <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
-          <div class="field">
-            <label>Google API Key</label>
-            <input type="password" id="google_key_input" placeholder="AIzaSy..." autocomplete="off">
-          </div>
-          <div class="field">
-            <label>Search Engine ID (cx)</label>
-            <input type="text" id="google_cx_input" placeholder="a1b2c3d4e5f6g..." autocomplete="off">
-          </div>
-        </div>
-        <div style="margin-top:10px; display:flex; align-items:center; gap:14px;">
-          <button class="btn-gen" onclick="saveGoogleKeys()" style="padding:9px 20px; font-size:13px;">Save Image Keys</button>
-          <span style="font-size:11px; color:var(--muted);">Leave blank to use Wikimedia Commons instead.</span>
-        </div>
-        <div class="err" id="google_key_err"></div>
-      </div>
     </div>
 
     <!-- Main generate row — shown once Anthropic key is saved -->
@@ -448,10 +425,33 @@
         </button>
         <div style="display:flex; align-items:center; gap:16px;">
           <span id="img_source_badge" style="font-size:11px; font-weight:600; padding:3px 10px; border-radius:20px; background:#F0FDF4; color:#166534; border:1px solid #BBF7D0; display:none;">Google Images ✓</span>
+          <button onclick="toggleGoogleSetup()" id="google_setup_link" style="background:none;border:none;color:var(--red);font-size:12px;cursor:pointer;text-decoration:underline;padding:0;">
+            Add Google Image Keys
+          </button>
           <button onclick="resetKey()" style="background:none;border:none;color:var(--muted);font-size:12px;cursor:pointer;text-decoration:underline;padding:0;">
-            Change keys
+            Change API key
           </button>
         </div>
+      </div>
+
+      <!-- Google keys inline panel — toggled by the link above -->
+      <div id="google_inline" style="display:none; margin-top:16px; padding-top:16px; border-top:1px solid var(--border);">
+        <div class="card-title" style="margin-bottom:10px;">Google Image Search Keys</div>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+          <div class="field">
+            <label>Google API Key</label>
+            <input type="password" id="google_key_input" placeholder="AIzaSy..." autocomplete="off">
+          </div>
+          <div class="field">
+            <label>Search Engine ID (cx)</label>
+            <input type="text" id="google_cx_input" placeholder="a1b2c3d4e5f6g..." autocomplete="off">
+          </div>
+        </div>
+        <div style="margin-top:10px; display:flex; align-items:center; gap:14px;">
+          <button class="btn-gen" onclick="saveGoogleKeys()" style="padding:9px 20px; font-size:13px;">Save Image Keys</button>
+          <button onclick="toggleGoogleSetup()" style="background:none;border:none;color:var(--muted);font-size:12px;cursor:pointer;text-decoration:underline;padding:0;">Cancel</button>
+        </div>
+        <div class="err" id="google_key_err"></div>
       </div>
     </div>
 
@@ -623,9 +623,15 @@ window.onload = () => {
 };
 
 function updateImgBadge() {
-  const badge = document.getElementById('img_source_badge');
   const hasGoogle = localStorage.getItem('dfc_google_key') && localStorage.getItem('dfc_google_cx');
-  badge.style.display = hasGoogle ? 'inline-block' : 'none';
+  document.getElementById('img_source_badge').style.display  = hasGoogle ? 'inline-block' : 'none';
+  const lnk = document.getElementById('google_setup_link');
+  if (lnk) lnk.textContent = hasGoogle ? 'Change Image Keys' : 'Add Google Image Keys';
+}
+
+function toggleGoogleSetup() {
+  const panel = document.getElementById('google_inline');
+  panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
 }
 
 // ─── Save Anthropic key ───────────────────────────────────────────────────────
@@ -664,10 +670,10 @@ function saveGoogleKeys(silent = false) {
     document.getElementById('google_key_input').value = '';
     document.getElementById('google_cx_input').value  = '';
     if (!silent) {
-      document.getElementById('key_setup').style.display = 'none';
-      document.getElementById('gen_row').style.display   = 'block';
-      updateImgBadge();
+      const panel = document.getElementById('google_inline');
+      if (panel) panel.style.display = 'none';
     }
+    updateImgBadge();
   } else if ((gKey || gCx) && !silent) {
     // Partial fill — warn
     if (errEl) {
