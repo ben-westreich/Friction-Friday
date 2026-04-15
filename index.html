@@ -398,35 +398,60 @@
       </div>
     </div>
 
-    <!-- vehicle form row -->
     <!-- API key setup — shown only until key is saved, then hidden -->
     <div id="key_setup" style="display:none; margin-top:18px; padding-top:18px; border-top:1px solid var(--border);">
-      <div class="card-title" style="margin-bottom:12px;">API Key Setup</div>
+      <div class="card-title" style="margin-bottom:12px;">Step 1 — Anthropic API Key <span style="font-weight:400;text-transform:none;letter-spacing:0;">(required)</span></div>
       <div class="api-row">
         <div class="field">
           <label>Anthropic API Key</label>
           <input type="password" id="api_key_input" placeholder="sk-ant-api03-..." autocomplete="off">
-          <div class="api-note">Saved to your browser only — never stored in the code or on any server. You only need to do this once.</div>
+          <div class="api-note">Saved to your browser only — never stored in code or on any server. One-time setup.</div>
         </div>
         <button class="btn-gen" id="save_key_btn" onclick="saveKey()">
           Save Key
         </button>
       </div>
       <div class="err" id="key_err"></div>
+
+      <!-- Google Image Search keys — optional -->
+      <div style="margin-top:22px; padding-top:18px; border-top:1px solid var(--border);">
+        <div class="card-title" style="margin-bottom:4px;">Step 2 — Google Image Search <span style="font-weight:400;text-transform:none;letter-spacing:0;">(optional — for press-quality photos)</span></div>
+        <div class="api-note" style="margin-bottom:12px;">
+          Get a free key at <a href="https://console.cloud.google.com/apis/library/customsearch.googleapis.com" target="_blank" rel="noopener" style="color:var(--red);">Google Cloud Console</a>, then create a Search Engine ID at <a href="https://programmablesearchengine.google.com/controlpanel/create" target="_blank" rel="noopener" style="color:var(--red);">Programmable Search Engine</a>. Free for 100 searches/day.
+        </div>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+          <div class="field">
+            <label>Google API Key</label>
+            <input type="password" id="google_key_input" placeholder="AIzaSy..." autocomplete="off">
+          </div>
+          <div class="field">
+            <label>Search Engine ID (cx)</label>
+            <input type="text" id="google_cx_input" placeholder="a1b2c3d4e5f6g..." autocomplete="off">
+          </div>
+        </div>
+        <div style="margin-top:10px; display:flex; align-items:center; gap:14px;">
+          <button class="btn-gen" onclick="saveGoogleKeys()" style="padding:9px 20px; font-size:13px;">Save Image Keys</button>
+          <span style="font-size:11px; color:var(--muted);">Leave blank to use Wikimedia Commons instead.</span>
+        </div>
+        <div class="err" id="google_key_err"></div>
+      </div>
     </div>
 
-    <!-- Main generate row — shown once key is saved -->
+    <!-- Main generate row — shown once Anthropic key is saved -->
     <div id="gen_row" style="display:none; margin-top:4px;">
-      <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
         <button class="btn-gen" id="gen_btn" onclick="generate()">
           <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
             <path d="M13 10V3L4 14h7v7l9-11h-7z"/>
           </svg>
           Generate
         </button>
-        <button onclick="resetKey()" style="background:none;border:none;color:var(--muted);font-size:12px;cursor:pointer;text-decoration:underline;padding:0;">
-          Change API key
-        </button>
+        <div style="display:flex; align-items:center; gap:16px;">
+          <span id="img_source_badge" style="font-size:11px; font-weight:600; padding:3px 10px; border-radius:20px; background:#F0FDF4; color:#166534; border:1px solid #BBF7D0; display:none;">Google Images ✓</span>
+          <button onclick="resetKey()" style="background:none;border:none;color:var(--muted);font-size:12px;cursor:pointer;text-decoration:underline;padding:0;">
+            Change keys
+          </button>
+        </div>
       </div>
     </div>
 
@@ -583,23 +608,30 @@ Return ONLY valid JSON — no markdown fences, no extra text:
 
 
 // ═════════════════════════════════════════════════════════════════════════════
-//  INIT — check if key is already saved
+//  INIT — check saved keys
 // ═════════════════════════════════════════════════════════════════════════════
 window.onload = () => {
   const saved = localStorage.getItem('dfc_ff_key');
   if (saved) {
     document.getElementById('gen_row').style.display   = 'block';
     document.getElementById('key_setup').style.display = 'none';
+    updateImgBadge();
   } else {
     document.getElementById('key_setup').style.display = 'block';
     document.getElementById('gen_row').style.display   = 'none';
   }
 };
 
-// ─── Save key ────────────────────────────────────────────────────────────────
+function updateImgBadge() {
+  const badge = document.getElementById('img_source_badge');
+  const hasGoogle = localStorage.getItem('dfc_google_key') && localStorage.getItem('dfc_google_cx');
+  badge.style.display = hasGoogle ? 'inline-block' : 'none';
+}
+
+// ─── Save Anthropic key ───────────────────────────────────────────────────────
 function saveKey() {
-  const key    = document.getElementById('api_key_input').value.trim();
-  const errEl  = document.getElementById('key_err');
+  const key   = document.getElementById('api_key_input').value.trim();
+  const errEl = document.getElementById('key_err');
   errEl.classList.remove('show');
 
   if (!key || !key.startsWith('sk-ant-')) {
@@ -610,13 +642,47 @@ function saveKey() {
 
   localStorage.setItem('dfc_ff_key', key);
   document.getElementById('api_key_input').value     = '';
+
+  // Also save Google keys if filled in
+  saveGoogleKeys(true);
+
   document.getElementById('key_setup').style.display = 'none';
   document.getElementById('gen_row').style.display   = 'block';
+  updateImgBadge();
 }
 
-// ─── Reset / change key ───────────────────────────────────────────────────────
+// ─── Save Google image keys ───────────────────────────────────────────────────
+function saveGoogleKeys(silent = false) {
+  const gKey  = document.getElementById('google_key_input').value.trim();
+  const gCx   = document.getElementById('google_cx_input').value.trim();
+  const errEl = document.getElementById('google_key_err');
+  if (errEl) errEl.classList.remove('show');
+
+  if (gKey && gCx) {
+    localStorage.setItem('dfc_google_key', gKey);
+    localStorage.setItem('dfc_google_cx',  gCx);
+    document.getElementById('google_key_input').value = '';
+    document.getElementById('google_cx_input').value  = '';
+    if (!silent) {
+      document.getElementById('key_setup').style.display = 'none';
+      document.getElementById('gen_row').style.display   = 'block';
+      updateImgBadge();
+    }
+  } else if ((gKey || gCx) && !silent) {
+    // Partial fill — warn
+    if (errEl) {
+      errEl.textContent = 'Enter both the API Key and Search Engine ID to enable Google Images.';
+      errEl.classList.add('show');
+    }
+  }
+  // Both empty = skip (use Wikimedia)
+}
+
+// ─── Reset / change keys ─────────────────────────────────────────────────────
 function resetKey() {
   localStorage.removeItem('dfc_ff_key');
+  localStorage.removeItem('dfc_google_key');
+  localStorage.removeItem('dfc_google_cx');
   document.getElementById('gen_row').style.display   = 'none';
   document.getElementById('key_setup').style.display = 'block';
   document.getElementById('api_key_input').focus();
@@ -774,9 +840,39 @@ async function searchImages(yearStart, yearEnd, make, model) {
   const dedup = (arr, existing) => arr.filter(e => !existing.some(x => x.full === e.full));
 
   try {
+    // ── Google Custom Search (when keys are configured) ──────────────────────
+    const gKey = localStorage.getItem('dfc_google_key');
+    const gCx  = localStorage.getItem('dfc_google_cx');
+
+    if (gKey && gCx) {
+      const query = `${year} ${make} ${model} front exterior`;
+      const url   = `https://www.googleapis.com/customsearch/v1?` + new URLSearchParams({
+        key: gKey, cx: gCx,
+        searchType: 'image',
+        q: query,
+        num: '9',
+        imgSize: 'large',
+        imgType: 'photo',
+        safe: 'active',
+      });
+      const res  = await fetch(url);
+      const data = await res.json();
+
+      if (data.error) {
+        console.warn('Google CSE error:', data.error.message);
+        // Fall through to Wikimedia
+      } else {
+        return (data.items || []).map(item => ({
+          thumb: item.image?.thumbnailLink || item.link,
+          full:  item.link,
+        })).slice(0, 9);
+      }
+    }
+
+    // ── Wikimedia fallback (no Google keys) ──────────────────────────────────
     let images = [];
 
-    // ── 1. Wikipedia lead image (manufacturer's official press shot) ─────────
+    // Wikipedia lead image (manufacturer press shot)
     for (const title of [`${make} ${model}`, `${year} ${make} ${model}`]) {
       const pp = new URLSearchParams({
         action: 'query', titles: title,
@@ -792,7 +888,7 @@ async function searchImages(yearStart, yearEnd, make, model) {
       }
     }
 
-    // ── 2. Wikimedia Commons category — front-sorted, bad files excluded ─────
+    // Wikimedia Commons category — front-sorted, bad files excluded
     if (images.length < 9) {
       const catName = `${make}_${model}`.replace(/ /g, '_');
       const cp = new URLSearchParams({
@@ -810,13 +906,9 @@ async function searchImages(yearStart, yearEnd, make, model) {
       images = [...images, ...dedup(catImgs, images)];
     }
 
-    // ── 3. Wikimedia text search with -rear -interior minus operators ─────────
+    // Wikimedia text search with minus operators
     if (images.length < 6) {
-      const queries = [
-        `${make} ${model} front exterior -rear -interior -badge`,
-        `${year} ${make} ${model} -rear -interior`,
-      ];
-      for (const q of queries) {
+      for (const q of [`${make} ${model} front exterior -rear -interior`, `${year} ${make} ${model} -rear -interior`]) {
         if (images.length >= 9) break;
         const sp = new URLSearchParams({
           action: 'query', list: 'search',
