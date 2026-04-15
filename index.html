@@ -728,10 +728,10 @@ async function callClaude(yearStart, yearEnd, make, model, apiKey) {
 
 // ═════════════════════════════════════════════════════════════════════════════
 //  IMAGE SEARCH
-//  1. Wikipedia lead image  — almost always the official manufacturer press photo
-//  2. Wikipedia article images — additional editorial shots from the article
-//  3. Wikimedia Commons category — supplementary, front/exterior sorted first
-//  4. Text search fallback
+//  1. Wikipedia lead image — official manufacturer press photo (front 3/4)
+//  2. Wikimedia Commons category — front/exterior files sorted first,
+//     rear/interior/badge files hard-excluded
+//  3. Wikimedia text search — with -rear -interior minus operators
 // ═════════════════════════════════════════════════════════════════════════════
 async function searchImages(yearStart, yearEnd, make, model) {
   const year = yearEnd || yearStart;
@@ -744,8 +744,20 @@ async function searchImages(yearStart, yearEnd, make, model) {
   const WP_API = 'https://en.wikipedia.org/w/api.php';
   const WM_API = 'https://commons.wikimedia.org/w/api.php';
 
-  // ── Helper: resolve Wikimedia/Wikipedia file titles → {thumb, full} ──────
-  async function resolveFileTitles(api, titles) {
+  // Hard exclude: rear, interior, badge, diagram, icon, etc.
+  const isBad = t => /rear|_back_|\bback\b|interior|cockpit|dashboard|instrument|cabin|engine_bay|trunk|cargo|taillight|tail.light|taillamp|exhaust|logo|icon|seal|flag|map|diagram|badge|emblem|insignia|crest|coat_of|wheel.?cover|hubcap/i.test(t);
+
+  // Scoring: higher = more likely front-facing exterior
+  const frontScore = t => {
+    if (/\bfront\b|exterior|fascia|\bfq\b|front.quarter|3.?4.front/i.test(t)) return 2;
+    if (/\bside\b|profile|lateral/i.test(t)) return 1;
+    return 0;
+  };
+
+  const sortFront = arr => [...arr].sort((a, b) => frontScore(b) - frontScore(a));
+
+  // Resolve file titles → [{thumb, full}]
+  async function resolveFiles(api, titles) {
     if (!titles.length) return [];
     const ip = new URLSearchParams({
       action: 'query', titles: titles.slice(0, 12).join('|'),
@@ -759,108 +771,66 @@ async function searchImages(yearStart, yearEnd, make, model) {
       .filter(p => p.thumb);
   }
 
-  // Junk-file filter — skip logos, icons, maps, diagrams, badges
-  const isJunk = t => /logo|icon|seal|flag|map|diagram|badge|emblem|insignia|crest|coat_of/i.test(t);
+  const dedup = (arr, existing) => arr.filter(e => !existing.some(x => x.full === e.full));
 
   try {
     let images = [];
 
-    // ── 1. Wikipedia lead image (the page's main press photo) ───────────────
-    // Try both "Make Model" and "Year Make Model" as article titles
-    const wpTitles = [`${make} ${model}`, `${year} ${make} ${model}`];
-    for (const title of wpTitles) {
+    // ── 1. Wikipedia lead image (manufacturer's official press shot) ─────────
+    for (const title of [`${make} ${model}`, `${year} ${make} ${model}`]) {
       const pp = new URLSearchParams({
         action: 'query', titles: title,
         prop: 'pageimages', pithumbsize: '960',
         format: 'json', origin: '*',
       });
-      const wpd = await fetch(`${WP_API}?${pp}`).then(r => r.json());
+      const wpd  = await fetch(`${WP_API}?${pp}`).then(r => r.json());
       const page = Object.values(wpd.query?.pages ?? {}).find(p => !p.missing && p.thumbnail);
       if (page?.thumbnail) {
-        const src   = page.thumbnail.source;
-        const large = src.replace(/\/\d+px-/, '/960px-');
-        images.push({ thumb: src, full: large });
-        break; // Got the lead image — move on
+        const src = page.thumbnail.source;
+        images.push({ thumb: src, full: src.replace(/\/\d+px-/, '/960px-') });
+        break;
       }
     }
 
-    // ── 2. Additional images from the Wikipedia article ──────────────────────
+    // ── 2. Wikimedia Commons category — front-sorted, bad files excluded ─────
     if (images.length < 9) {
-      for (const title of wpTitles) {
-        const pp = new URLSearchParams({
-          action: 'query', titles: title,
-          prop: 'images', imlimit: '20',
-          format: 'json', origin: '*',
-        });
-        const wpd = await fetch(`${WP_API}?${pp}`).then(r => r.json());
-        const page = Object.values(wpd.query?.pages ?? {}).find(p => !p.missing && p.images);
-        if (!page) continue;
-
-        const fileTitles = page.images
-          .map(i => i.title)
-          .filter(t => /\.(jpe?g|png)$/i.test(t) && !isJunk(t));
-
-        // Sort: front/exterior named files first
-        const sorted = [
-          ...fileTitles.filter(t => /front|exterior|fascia/i.test(t)),
-          ...fileTitles.filter(t => !/front|exterior|fascia/i.test(t)),
-        ];
-
-        const extras = await resolveFileTitles(WP_API, sorted);
-        // Deduplicate against images we already have
-        extras.forEach(e => {
-          if (!images.some(x => x.full === e.full)) images.push(e);
-        });
-        if (images.length >= 6) break;
-      }
-    }
-
-    // ── 3. Wikimedia Commons category (curated, front-sorted) ───────────────
-    if (images.length < 6) {
       const catName = `${make}_${model}`.replace(/ /g, '_');
       const cp = new URLSearchParams({
         action: 'query', list: 'categorymembers',
-        cmtitle: `Category:${catName}`, cmtype: 'file', cmlimit: '20',
+        cmtitle: `Category:${catName}`, cmtype: 'file', cmlimit: '40',
         format: 'json', origin: '*',
       });
       const cd = await fetch(`${WM_API}?${cp}`).then(r => r.json());
-      const catTitles = (cd.query?.categorymembers ?? [])
-        .map(m => m.title)
-        .filter(t => /\.(jpe?g|png)$/i.test(t) && !isJunk(t));
-
-      const sorted = [
-        ...catTitles.filter(t => /front|exterior|fascia/i.test(t)),
-        ...catTitles.filter(t => !/front|exterior|fascia/i.test(t)),
-      ];
-
-      const catImgs = await resolveFileTitles(WM_API, sorted);
-      catImgs.forEach(e => {
-        if (!images.some(x => x.full === e.full)) images.push(e);
-      });
+      const catTitles = sortFront(
+        (cd.query?.categorymembers ?? [])
+          .map(m => m.title)
+          .filter(t => /\.(jpe?g|png)$/i.test(t) && !isBad(t))
+      );
+      const catImgs = await resolveFiles(WM_API, catTitles);
+      images = [...images, ...dedup(catImgs, images)];
     }
 
-    // ── 4. Text search fallback ──────────────────────────────────────────────
-    if (images.length < 3) {
-      const queries = [`${make} ${model} front exterior`, `${year} ${make} ${model}`];
+    // ── 3. Wikimedia text search with -rear -interior minus operators ─────────
+    if (images.length < 6) {
+      const queries = [
+        `${make} ${model} front exterior -rear -interior -badge`,
+        `${year} ${make} ${model} -rear -interior`,
+      ];
       for (const q of queries) {
-        if (images.length >= 6) break;
+        if (images.length >= 9) break;
         const sp = new URLSearchParams({
           action: 'query', list: 'search',
           srsearch: q, srnamespace: '6',
-          format: 'json', origin: '*', srlimit: '15',
+          format: 'json', origin: '*', srlimit: '20',
         });
         const sd = await fetch(`${WM_API}?${sp}`).then(r => r.json());
-        const titles = (sd.query?.search ?? [])
-          .map(h => h.title)
-          .filter(t => /\.(jpe?g|png)$/i.test(t) && !isJunk(t));
-        const sorted = [
-          ...titles.filter(t => /front|exterior/i.test(t)),
-          ...titles.filter(t => !/front|exterior/i.test(t)),
-        ];
-        const extras = await resolveFileTitles(WM_API, sorted);
-        extras.forEach(e => {
-          if (!images.some(x => x.full === e.full)) images.push(e);
-        });
+        const titles = sortFront(
+          (sd.query?.search ?? [])
+            .map(h => h.title)
+            .filter(t => /\.(jpe?g|png)$/i.test(t) && !isBad(t))
+        );
+        const extras = await resolveFiles(WM_API, titles);
+        images = [...images, ...dedup(extras, images)];
       }
     }
 
