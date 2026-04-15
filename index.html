@@ -279,7 +279,25 @@
     align-items: center;
   }
   .img-hdr h3 { color: #fff; font-size: 11.5px; font-weight: 700; letter-spacing: 0.9px; text-transform: uppercase; }
+  .img-hdr-right { display: flex; align-items: center; gap: 10px; }
   .img-hdr span { color: rgba(255,255,255,0.40); font-size: 11px; }
+  .btn-google-img {
+    background: rgba(255,255,255,0.12);
+    color: rgba(255,255,255,0.88);
+    border: 1px solid rgba(255,255,255,0.22);
+    border-radius: 6px;
+    padding: 5px 13px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    text-decoration: none;
+    white-space: nowrap;
+    transition: background 0.15s;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .btn-google-img:hover { background: rgba(255,255,255,0.22); }
 
   .img-grid {
     display: grid;
@@ -450,7 +468,15 @@
     <div class="img-card" id="img_card">
       <div class="img-hdr">
         <h3>Vehicle Images</h3>
-        <span>Click to open full size · Wikimedia Commons</span>
+        <div class="img-hdr-right">
+          <span>Click to open full size</span>
+          <a id="google_img_link" class="btn-google-img" href="#" target="_blank" rel="noopener">
+            <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+            </svg>
+            Google Images
+          </a>
+        </div>
       </div>
       <div id="img_body"></div>
     </div>
@@ -701,41 +727,89 @@ async function callClaude(yearStart, yearEnd, make, model, apiKey) {
 
 
 // ═════════════════════════════════════════════════════════════════════════════
-//  WIKIMEDIA COMMONS IMAGE SEARCH
+//  IMAGE SEARCH  (Wikimedia category → front/exterior text → basic fallback)
 // ═════════════════════════════════════════════════════════════════════════════
 async function searchImages(yearStart, yearEnd, make, model) {
+  // Update Google Images link immediately
+  const googleQuery = encodeURIComponent(`${yearEnd || yearStart} ${make} ${model} front exterior`);
+  const googleLink  = document.getElementById('google_img_link');
+  if (googleLink) {
+    googleLink.href = `https://www.google.com/search?tbm=isch&q=${googleQuery}`;
+  }
+
   try {
-    const year  = yearEnd || yearStart;
-    const query = `${year} ${make} ${model}`;
+    const API = 'https://commons.wikimedia.org/w/api.php';
 
-    const sp = new URLSearchParams({
-      action: 'query', list: 'search',
-      srsearch: query, srnamespace: '6',
-      format: 'json', origin: '*', srlimit: '12',
-    });
-    const sd = await fetch(`https://commons.wikimedia.org/w/api.php?${sp}`)
-                         .then(r => r.json());
+    // ── Helper: resolve a list of file titles → image URL objects ──────────
+    async function resolveImages(titles) {
+      if (!titles.length) return [];
+      const ip = new URLSearchParams({
+        action: 'query', titles: titles.join('|'),
+        prop: 'imageinfo', iiprop: 'url', iiurlwidth: '960',
+        format: 'json', origin: '*',
+      });
+      const d = await fetch(`${API}?${ip}`).then(r => r.json());
+      return Object.values(d.query?.pages ?? {})
+        .filter(p => !p.missing && p.imageinfo?.[0])
+        .map(p => ({ thumb: p.imageinfo[0].thumburl || p.imageinfo[0].url, full: p.imageinfo[0].url }))
+        .filter(p => p.thumb);
+    }
 
-    const titles = (sd.query?.search ?? [])
-      .map(h => h.title)
-      .filter(t => /\.(jpe?g|png|webp)$/i.test(t))
-      .slice(0, 9).join('|');
-
-    if (!titles) return [];
-
-    const ip = new URLSearchParams({
-      action: 'query', titles,
-      prop: 'imageinfo', iiprop: 'url', iiurlwidth: '900',
+    // ── 1. Try Wikimedia category (most curated, often press-quality shots) ─
+    const catName = `${make}_${model}`.replace(/ /g, '_');
+    const cp = new URLSearchParams({
+      action: 'query', list: 'categorymembers',
+      cmtitle: `Category:${catName}`, cmtype: 'file', cmlimit: '20',
       format: 'json', origin: '*',
     });
-    const id = await fetch(`https://commons.wikimedia.org/w/api.php?${ip}`)
-                         .then(r => r.json());
+    const cd = await fetch(`${API}?${cp}`).then(r => r.json());
+    const catTitles = (cd.query?.categorymembers ?? [])
+      .map(m => m.title)
+      .filter(t => /\.(jpe?g|png)$/i.test(t));
 
-    return Object.values(id.query?.pages ?? {})
-      .filter(p => !p.missing && p.imageinfo?.[0])
-      .map(p => ({ thumb: p.imageinfo[0].thumburl || p.imageinfo[0].url, full: p.imageinfo[0].url }))
-      .filter(p => p.thumb)
-      .slice(0, 9);
+    if (catTitles.length >= 3) {
+      // Sort: prefer titles with "front" or "exterior" in the name
+      const sorted = [
+        ...catTitles.filter(t => /front|exterior|fascia/i.test(t)),
+        ...catTitles.filter(t => !/front|exterior|fascia/i.test(t)),
+      ];
+      const imgs = await resolveImages(sorted.slice(0, 9));
+      if (imgs.length >= 3) return imgs;
+    }
+
+    // ── 2. Text search — "front exterior" priority ──────────────────────────
+    const queries = [
+      `${make} ${model} front exterior`,
+      `${yearEnd || yearStart} ${make} ${model} front`,
+      `${yearEnd || yearStart} ${make} ${model}`,
+    ];
+
+    let collected = [];
+    for (const q of queries) {
+      if (collected.length >= 6) break;
+      const sp = new URLSearchParams({
+        action: 'query', list: 'search',
+        srsearch: q, srnamespace: '6',
+        format: 'json', origin: '*', srlimit: '15',
+      });
+      const sd = await fetch(`${API}?${sp}`).then(r => r.json());
+      const titles = (sd.query?.search ?? [])
+        .map(h => h.title)
+        .filter(t => /\.(jpe?g|png)$/i.test(t))
+        .filter(t => !collected.some(c => c.fullTitle === t));
+
+      // Sort: front/exterior-named files first
+      const sorted = [
+        ...titles.filter(t => /front|exterior|fascia/i.test(t)),
+        ...titles.filter(t => !/front|exterior|fascia/i.test(t)),
+      ];
+
+      const imgs = await resolveImages(sorted.slice(0, 9));
+      imgs.forEach(img => img.fullTitle = sorted[imgs.indexOf(img)] || '');
+      collected = [...collected, ...imgs];
+    }
+
+    return collected.slice(0, 9);
 
   } catch (e) {
     console.warn('Image search:', e);
@@ -752,7 +826,9 @@ function renderImages(images) {
   body.innerHTML = '';
 
   if (!images.length) {
-    body.innerHTML = '<div class="no-images">No images found — try a Google Images search for this vehicle.</div>';
+    const gLink = document.getElementById('google_img_link');
+    const gHref  = gLink ? gLink.href : '#';
+    body.innerHTML = `<div class="no-images">No images found on Wikimedia Commons — <a href="${gHref}" target="_blank" rel="noopener" style="color:var(--red)">search Google Images</a> for professional press photos.</div>`;
     return;
   }
 
