@@ -727,89 +727,144 @@ async function callClaude(yearStart, yearEnd, make, model, apiKey) {
 
 
 // ═════════════════════════════════════════════════════════════════════════════
-//  IMAGE SEARCH  (Wikimedia category → front/exterior text → basic fallback)
+//  IMAGE SEARCH
+//  1. Wikipedia lead image  — almost always the official manufacturer press photo
+//  2. Wikipedia article images — additional editorial shots from the article
+//  3. Wikimedia Commons category — supplementary, front/exterior sorted first
+//  4. Text search fallback
 // ═════════════════════════════════════════════════════════════════════════════
 async function searchImages(yearStart, yearEnd, make, model) {
-  // Update Google Images link immediately
-  const googleQuery = encodeURIComponent(`${yearEnd || yearStart} ${make} ${model} front exterior`);
+  const year = yearEnd || yearStart;
+
+  // Wire up Google Images button immediately
+  const googleQuery = encodeURIComponent(`${year} ${make} ${model} front exterior press photo`);
   const googleLink  = document.getElementById('google_img_link');
-  if (googleLink) {
-    googleLink.href = `https://www.google.com/search?tbm=isch&q=${googleQuery}`;
-  }
+  if (googleLink) googleLink.href = `https://www.google.com/search?tbm=isch&q=${googleQuery}`;
 
-  try {
-    const API = 'https://commons.wikimedia.org/w/api.php';
+  const WP_API = 'https://en.wikipedia.org/w/api.php';
+  const WM_API = 'https://commons.wikimedia.org/w/api.php';
 
-    // ── Helper: resolve a list of file titles → image URL objects ──────────
-    async function resolveImages(titles) {
-      if (!titles.length) return [];
-      const ip = new URLSearchParams({
-        action: 'query', titles: titles.join('|'),
-        prop: 'imageinfo', iiprop: 'url', iiurlwidth: '960',
-        format: 'json', origin: '*',
-      });
-      const d = await fetch(`${API}?${ip}`).then(r => r.json());
-      return Object.values(d.query?.pages ?? {})
-        .filter(p => !p.missing && p.imageinfo?.[0])
-        .map(p => ({ thumb: p.imageinfo[0].thumburl || p.imageinfo[0].url, full: p.imageinfo[0].url }))
-        .filter(p => p.thumb);
-    }
-
-    // ── 1. Try Wikimedia category (most curated, often press-quality shots) ─
-    const catName = `${make}_${model}`.replace(/ /g, '_');
-    const cp = new URLSearchParams({
-      action: 'query', list: 'categorymembers',
-      cmtitle: `Category:${catName}`, cmtype: 'file', cmlimit: '20',
+  // ── Helper: resolve Wikimedia/Wikipedia file titles → {thumb, full} ──────
+  async function resolveFileTitles(api, titles) {
+    if (!titles.length) return [];
+    const ip = new URLSearchParams({
+      action: 'query', titles: titles.slice(0, 12).join('|'),
+      prop: 'imageinfo', iiprop: 'url', iiurlwidth: '960',
       format: 'json', origin: '*',
     });
-    const cd = await fetch(`${API}?${cp}`).then(r => r.json());
-    const catTitles = (cd.query?.categorymembers ?? [])
-      .map(m => m.title)
-      .filter(t => /\.(jpe?g|png)$/i.test(t));
+    const d = await fetch(`${api}?${ip}`).then(r => r.json());
+    return Object.values(d.query?.pages ?? {})
+      .filter(p => !p.missing && p.imageinfo?.[0])
+      .map(p => ({ thumb: p.imageinfo[0].thumburl || p.imageinfo[0].url, full: p.imageinfo[0].url }))
+      .filter(p => p.thumb);
+  }
 
-    if (catTitles.length >= 3) {
-      // Sort: prefer titles with "front" or "exterior" in the name
+  // Junk-file filter — skip logos, icons, maps, diagrams, badges
+  const isJunk = t => /logo|icon|seal|flag|map|diagram|badge|emblem|insignia|crest|coat_of/i.test(t);
+
+  try {
+    let images = [];
+
+    // ── 1. Wikipedia lead image (the page's main press photo) ───────────────
+    // Try both "Make Model" and "Year Make Model" as article titles
+    const wpTitles = [`${make} ${model}`, `${year} ${make} ${model}`];
+    for (const title of wpTitles) {
+      const pp = new URLSearchParams({
+        action: 'query', titles: title,
+        prop: 'pageimages', pithumbsize: '960',
+        format: 'json', origin: '*',
+      });
+      const wpd = await fetch(`${WP_API}?${pp}`).then(r => r.json());
+      const page = Object.values(wpd.query?.pages ?? {}).find(p => !p.missing && p.thumbnail);
+      if (page?.thumbnail) {
+        const src   = page.thumbnail.source;
+        const large = src.replace(/\/\d+px-/, '/960px-');
+        images.push({ thumb: src, full: large });
+        break; // Got the lead image — move on
+      }
+    }
+
+    // ── 2. Additional images from the Wikipedia article ──────────────────────
+    if (images.length < 9) {
+      for (const title of wpTitles) {
+        const pp = new URLSearchParams({
+          action: 'query', titles: title,
+          prop: 'images', imlimit: '20',
+          format: 'json', origin: '*',
+        });
+        const wpd = await fetch(`${WP_API}?${pp}`).then(r => r.json());
+        const page = Object.values(wpd.query?.pages ?? {}).find(p => !p.missing && p.images);
+        if (!page) continue;
+
+        const fileTitles = page.images
+          .map(i => i.title)
+          .filter(t => /\.(jpe?g|png)$/i.test(t) && !isJunk(t));
+
+        // Sort: front/exterior named files first
+        const sorted = [
+          ...fileTitles.filter(t => /front|exterior|fascia/i.test(t)),
+          ...fileTitles.filter(t => !/front|exterior|fascia/i.test(t)),
+        ];
+
+        const extras = await resolveFileTitles(WP_API, sorted);
+        // Deduplicate against images we already have
+        extras.forEach(e => {
+          if (!images.some(x => x.full === e.full)) images.push(e);
+        });
+        if (images.length >= 6) break;
+      }
+    }
+
+    // ── 3. Wikimedia Commons category (curated, front-sorted) ───────────────
+    if (images.length < 6) {
+      const catName = `${make}_${model}`.replace(/ /g, '_');
+      const cp = new URLSearchParams({
+        action: 'query', list: 'categorymembers',
+        cmtitle: `Category:${catName}`, cmtype: 'file', cmlimit: '20',
+        format: 'json', origin: '*',
+      });
+      const cd = await fetch(`${WM_API}?${cp}`).then(r => r.json());
+      const catTitles = (cd.query?.categorymembers ?? [])
+        .map(m => m.title)
+        .filter(t => /\.(jpe?g|png)$/i.test(t) && !isJunk(t));
+
       const sorted = [
         ...catTitles.filter(t => /front|exterior|fascia/i.test(t)),
         ...catTitles.filter(t => !/front|exterior|fascia/i.test(t)),
       ];
-      const imgs = await resolveImages(sorted.slice(0, 9));
-      if (imgs.length >= 3) return imgs;
-    }
 
-    // ── 2. Text search — "front exterior" priority ──────────────────────────
-    const queries = [
-      `${make} ${model} front exterior`,
-      `${yearEnd || yearStart} ${make} ${model} front`,
-      `${yearEnd || yearStart} ${make} ${model}`,
-    ];
-
-    let collected = [];
-    for (const q of queries) {
-      if (collected.length >= 6) break;
-      const sp = new URLSearchParams({
-        action: 'query', list: 'search',
-        srsearch: q, srnamespace: '6',
-        format: 'json', origin: '*', srlimit: '15',
+      const catImgs = await resolveFileTitles(WM_API, sorted);
+      catImgs.forEach(e => {
+        if (!images.some(x => x.full === e.full)) images.push(e);
       });
-      const sd = await fetch(`${API}?${sp}`).then(r => r.json());
-      const titles = (sd.query?.search ?? [])
-        .map(h => h.title)
-        .filter(t => /\.(jpe?g|png)$/i.test(t))
-        .filter(t => !collected.some(c => c.fullTitle === t));
-
-      // Sort: front/exterior-named files first
-      const sorted = [
-        ...titles.filter(t => /front|exterior|fascia/i.test(t)),
-        ...titles.filter(t => !/front|exterior|fascia/i.test(t)),
-      ];
-
-      const imgs = await resolveImages(sorted.slice(0, 9));
-      imgs.forEach(img => img.fullTitle = sorted[imgs.indexOf(img)] || '');
-      collected = [...collected, ...imgs];
     }
 
-    return collected.slice(0, 9);
+    // ── 4. Text search fallback ──────────────────────────────────────────────
+    if (images.length < 3) {
+      const queries = [`${make} ${model} front exterior`, `${year} ${make} ${model}`];
+      for (const q of queries) {
+        if (images.length >= 6) break;
+        const sp = new URLSearchParams({
+          action: 'query', list: 'search',
+          srsearch: q, srnamespace: '6',
+          format: 'json', origin: '*', srlimit: '15',
+        });
+        const sd = await fetch(`${WM_API}?${sp}`).then(r => r.json());
+        const titles = (sd.query?.search ?? [])
+          .map(h => h.title)
+          .filter(t => /\.(jpe?g|png)$/i.test(t) && !isJunk(t));
+        const sorted = [
+          ...titles.filter(t => /front|exterior/i.test(t)),
+          ...titles.filter(t => !/front|exterior/i.test(t)),
+        ];
+        const extras = await resolveFileTitles(WM_API, sorted);
+        extras.forEach(e => {
+          if (!images.some(x => x.full === e.full)) images.push(e);
+        });
+      }
+    }
+
+    return images.slice(0, 9);
 
   } catch (e) {
     console.warn('Image search:', e);
